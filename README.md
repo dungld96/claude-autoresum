@@ -1,6 +1,9 @@
 # claude-autoresume
 
-Auto compact + auto resume for [Claude Code](https://docs.claude.com/en/docs/claude-code) on Windows (Pro plan).
+Auto compact + auto resume for [Claude Code](https://docs.claude.com/en/docs/claude-code) on Windows (Pro plan). Two tools:
+
+- `claude-tui-compact.ps1`: for the **interactive TUI**. Compacts before the 5h quota runs out (pair it with Claude Code's own `autoContinueAtUsageLimit`).
+- `claude-autoresume.ps1`: **headless** loop for unattended runs (compact, handoff, resume after limit). Described first below.
 
 It runs Claude Code headless in a loop, a few turns at a time. It compacts the context **before** the 5-hour quota runs out, and when the limit is hit anyway it sleeps until the reset time and resumes the same session. Good for long, multi-step tasks you leave running overnight.
 
@@ -135,24 +138,38 @@ Then check the log:
 - To exercise the compact path, lower the thresholds, for example `-MinCompactTokens 3000 -CompactAtPercent 5`, with a task that runs several turns. You should see either `Compact done (compact_boundary received ...)` or `Falling back to handoff`.
 - `Warning: N tool call(s) denied by permissions`: pass `-AllowedTools` (for example `"Bash Edit Write Read Glob Grep"`), otherwise tools such as `Bash` are denied in headless mode.
 
-## Using the normal TUI with auto-resume (watcher)
+## Interactive TUI: compact before the quota runs out (`claude-tui-compact.ps1`)
 
-`claude-autoresume.ps1` is headless, so you cannot work in the TUI with it. If you want to use the regular Claude Code terminal UI and still survive usage limits, use the companion watcher `claude-autoresume-watch.ps1`:
+Recent Claude Code versions can already continue a task after a usage limit resets. Turn it on in your user settings (`%USERPROFILE%\.claude\settings.json`):
 
-```powershell
-# window 1: your normal session
-cd D:\proj
-claude
-
-# window 2: the watcher (same project folder)
-.\claude-autoresume-watch.ps1 -WorkDir D:\proj
+```json
+{ "autoContinueAtUsageLimit": true }
 ```
 
-The watcher tails the session transcript in `~/.claude/projects/`. When Claude Code records a usage-limit error, it reads the reset time, waits, and then opens a **new terminal window** running `claude --resume <session> "<continue prompt>"`. You keep watching and steering in the TUI. Close the old window, which is stuck on the limit message. If you continue the old window yourself before the reset, the relaunch is cancelled.
+What Claude Code does not do is compact **before** the limit, so the first request after the reset has to reload the whole context into a fresh quota. `claude-tui-compact.ps1` covers that, inside the normal TUI:
 
-Useful options: `-NoLaunch` (only notify), `-SessionId` (pin one session), `-PermissionMode`, `-AllowedTools`, `-Model` (passed to the relaunched `claude`), `-Shell pwsh.exe`, `-LookbackMinutes` (also handle a limit you hit shortly before starting the watcher), `-MaxRelaunches`. Create `<WorkDir>\.claude-autoresume.stop` to stop it. The log is `.claude-autoresume-watch.log`.
+1. A **status line** script reads `rate_limits.five_hour.used_percentage` and the context size after every assistant message, saves a snapshot, and shows `ctx 45% | 5h 62% | 7d 15%`.
+2. A **hook** (`PostToolBatch`, `Stop`) checks the snapshot. When the 5h quota is at least `-CompactAtPercent` (80) and the context is at least `-MinCompactTokens` (40000), once per 5h window, it triggers a compact.
+3. Hooks cannot run slash commands, so a small detached helper **types** `/compact <instructions>` into the TUI's console, waits for the `PostCompact` hook, and, if it interrupted a running task, types the continue prompt.
 
-Differences from the headless script: no quota-driven compaction or handoff (the TUI's own auto-compact still applies), no unattended runs, and it relies on the transcript format, which is not a stable interface. Check the log line `Usage limit detected in session ...` the first time a limit happens.
+Setup:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\claude-tui-compact.ps1            # prints the settings.json block; merge it into %USERPROFILE%\.claude\settings.json
+```
+
+Restart Claude Code, then check that the status line shows `ctx ... | 5h ... | 7d ...`. If you already have a status line, merge the data-saving part into your own script instead.
+
+Options (put them in the printed commands): `-CompactAtPercent`, `-MinCompactTokens`, `-CompactInstructions`, `-ContinuePrompt`, `-InjectDelaySeconds`, `-CompactTimeoutMinutes`, and `-Mode notify`, which only shows a warning asking you to run `/compact` yourself (safe fallback if typing into the console does not work on your setup).
+
+Files: snapshots, state, signal files and the log `autoresume.log` are in `%USERPROFILE%\.claude\autoresume\`.
+
+Limitations (experimental):
+- Typing into the TUI uses Win32 `AttachConsole` + `WriteConsoleInput` on the `claude`/`node` process found by walking up from the hook. It has not been verified with every terminal (Windows Terminal, conhost, VS Code terminal). If it fails, the log says why; use `-Mode notify`.
+- If you are typing in the prompt box at the moment of injection, the text can mix. The trigger fires at the end of a turn or tool batch, so it is usually idle.
+- Status line `rate_limits` exists only for Pro/Max subscribers and only after the first API response of a session.
+- The hook can interrupt a running task at a tool-batch boundary (`continue: false`); the helper then types the continue prompt after the compact.
 
 ## Observing and steering a running task
 
