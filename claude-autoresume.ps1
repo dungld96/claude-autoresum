@@ -273,7 +273,6 @@ function Invoke-Claude([string]$text, [string]$sid) {
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = $utf8
     $psi.StandardErrorEncoding = $utf8
-    $psi.StandardInputEncoding = $utf8
     $psi.CreateNoWindow = $true
 
     $rawLines = New-Object System.Collections.Generic.List[string]
@@ -285,7 +284,10 @@ function Invoke-Claude([string]$text, [string]$sid) {
     $proc = [System.Diagnostics.Process]::Start($psi)
     try {
         # The prompt goes through stdin to avoid quote/newline escaping problems on Windows
-        $proc.StandardInput.Write($text)
+        # Write raw UTF-8 bytes (no BOM): ProcessStartInfo.StandardInputEncoding does not exist on .NET Framework (PS 5.1)
+        $inBytes = $utf8.GetBytes($text)
+        $proc.StandardInput.BaseStream.Write($inBytes, 0, $inBytes.Length)
+        $proc.StandardInput.BaseStream.Flush()
         $proc.StandardInput.Close()
         $errTask = $proc.StandardError.ReadToEndAsync()
         $deadline = if ($RunTimeoutMinutes -gt 0) { (Get-Date).AddMinutes($RunTimeoutMinutes) } else { [datetime]::MaxValue }
