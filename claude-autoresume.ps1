@@ -110,6 +110,7 @@ $HandoffResumePrompt = "This is a new session. Read HANDOFF.md in the project ro
 
 $script:SawQuotaInfo = $false
 $script:LoggedSample = $false
+$script:WeekPct = -1.0
 
 # ---------- helpers ----------
 function Write-Log([string]$msg) {
@@ -321,7 +322,7 @@ function Invoke-Claude([string]$text, [string]$sid) {
     $init = $events | Where-Object { $_.type -eq 'system' -and $_.subtype -eq 'init' } | Select-Object -First 1
 
     # Quota info from rate_limit_event
-    $qPct = -1.0; $qWarn = $false; $qReset = 0; $sawQuota = $false
+    $qPct = -1.0; $qWeek = -1.0; $qWarn = $false; $qReset = 0; $sawQuota = $false
     $rejectedAt = $null
     foreach ($ev in $events) {
         if ($ev.type -ne 'rate_limit_event') { continue }
@@ -336,14 +337,29 @@ function Invoke-Claude([string]$text, [string]$sid) {
         if (-not $script:LoggedSample) {
             $script:LoggedSample = $true
             $sample = ($ev | ConvertTo-Json -Depth 6 -Compress)
-            Write-Log ("rate_limit_event sample: " + $sample.Substring(0, [Math]::Min(400, $sample.Length)))
+            Write-Log ("rate_limit_event sample: " + $sample.Substring(0, [Math]::Min(1000, $sample.Length)))
+        }
+        # Newer Claude Code versions report both windows under unifiedWindows regardless of rateLimitType
+        $uw = $info.unifiedWindows
+        $u5 = $null
+        if ($uw -and $uw.five_hour -and $null -ne $uw.five_hour.utilization) {
+            $u5 = [double]$uw.five_hour.utilization
+            $s5 = ConvertTo-EpochSeconds $uw.five_hour.resetsAt
+            if ($s5 -gt 0) { $qReset = $s5 }
+        }
+        elseif ($type -eq 'five_hour' -and $null -ne $info.utilization) {
+            $u5 = [double]$info.utilization
+        }
+        if ($null -ne $u5) {
+            if ($UtilizationFormat -eq 'fraction') { $u5 = $u5 * 100 }
+            $qPct = $u5
+        }
+        if ($uw -and $uw.seven_day -and $null -ne $uw.seven_day.utilization) {
+            $u7 = [double]$uw.seven_day.utilization
+            if ($UtilizationFormat -eq 'fraction') { $u7 = $u7 * 100 }
+            $qWeek = $u7
         }
         if ($type -eq 'five_hour') {
-            if ($null -ne $info.utilization) {
-                $u = [double]$info.utilization
-                if ($UtilizationFormat -eq 'fraction') { $u = $u * 100 }
-                $qPct = $u
-            }
             if ($status -eq 'allowed_warning') { $qWarn = $true }
             if ($sec -gt 0) { $qReset = $sec }
         }
@@ -376,7 +392,7 @@ function Invoke-Claude([string]$text, [string]$sid) {
 
     [pscustomobject]@{
         Raw = $raw; Text = $resultText; IsError = $isErr; Limit = $limit; SessionId = $newSid; Cost = $cost; Code = $code
-        QPct = $qPct; QWarn = $qWarn; QReset = $qReset; SawQuota = $sawQuota; RejectedAt = $rejectedAt; TimedOut = $timedOut
+        QPct = $qPct; QWeek = $qWeek; QWarn = $qWarn; QReset = $qReset; SawQuota = $sawQuota; RejectedAt = $rejectedAt; TimedOut = $timedOut
     }
 }
 
@@ -384,6 +400,7 @@ function Invoke-Claude([string]$text, [string]$sid) {
 function Update-Quota($state, $r) {
     if ($r.SawQuota) { $script:SawQuotaInfo = $true }
     if ($r.QPct -ge 0) { $state.quotaPct = $r.QPct }
+    if ($r.QWeek -ge 0) { $script:WeekPct = $r.QWeek }
     if ($r.QWarn) { $state.warn = $true }
     if ($r.QReset -gt 0) { $state.windowResetAt = $r.QReset }
 }
@@ -535,7 +552,9 @@ try {
         $quotaTxt = "unknown"
         if ($state.quotaPct -ge 0) { $quotaTxt = ("{0:N0}%" -f $state.quotaPct) }
         if ($state.warn) { $quotaTxt += " (warned)" }
-        Write-Log ("Context ~{0:N0} tokens | 5h quota: {1} | window cost: `${2:N2}" -f $ctx, $quotaTxt, $state.blockCost)
+        $weekTxt = "unknown"
+        if ($script:WeekPct -ge 0) { $weekTxt = ("{0:N0}%" -f $script:WeekPct) }
+        Write-Log ("Context ~{0:N0} tokens | 5h quota: {1} | 7d quota: {2} | window cost: `${3:N2}" -f $ctx, $quotaTxt, $weekTxt, $state.blockCost)
 
         $canCompact = (-not $state.compacted) -or ($ctx -ge $HardCompactTokens -and $state.compactCount -lt $MaxCompactsPerWindow)
         if (-not $NoCompact -and $state.sessionId -and -not $state.pendingPrompt -and $canCompact -and $ctx -ge $MinCompactTokens) {
