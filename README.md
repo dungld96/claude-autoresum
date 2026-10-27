@@ -26,7 +26,7 @@ Use `/tui-compact:setup project` to set it up for the current project only.
 
 ## What it does
 
-When the 5h quota reaches **80%** and the context is at least **200,000 tokens**, it compacts once per 5h window:
+When the 5h quota reaches **96%** and the context is at least **200,000 tokens**, it compacts once per 5h window:
 
 - If Claude is busy, it pauses at the next tool boundary, compacts, then tells Claude to continue.
 - If Claude is idle, it just compacts.
@@ -42,7 +42,7 @@ Open `/plugin`, pick `tui-compact`, and change the options. The defaults work wi
 | Option | Default | Meaning |
 |---|---|---|
 | Mode | `inject` | `inject` types `/compact` for you. `notify` only shows a warning and you run `/compact` yourself. |
-| Compact at 5h quota % | 80 | Quota level that triggers a compact. |
+| Compact at 5h quota % | 96 | Quota level that triggers a compact. |
 | Minimum context tokens | 200000 | Below this, nothing is compacted. Models with the standard 200K window never reach it (Claude Code auto-compacts first), so lower it there, for example to 100000. It is meant for 1M-context models. |
 | Compact instructions | built-in | What `/compact` should keep. |
 | Continue prompt | built-in | Typed after a compact that interrupted a running task. |
