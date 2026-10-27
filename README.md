@@ -135,6 +135,25 @@ Then check the log:
 - To exercise the compact path, lower the thresholds, for example `-MinCompactTokens 3000 -CompactAtPercent 5`, with a task that runs several turns. You should see either `Compact done (compact_boundary received ...)` or `Falling back to handoff`.
 - `Warning: N tool call(s) denied by permissions`: pass `-AllowedTools` (for example `"Bash Edit Write Read Glob Grep"`), otherwise tools such as `Bash` are denied in headless mode.
 
+## Using the normal TUI with auto-resume (watcher)
+
+`claude-autoresume.ps1` is headless, so you cannot work in the TUI with it. If you want to use the regular Claude Code terminal UI and still survive usage limits, use the companion watcher `claude-autoresume-watch.ps1`:
+
+```powershell
+# window 1: your normal session
+cd D:\proj
+claude
+
+# window 2: the watcher (same project folder)
+.\claude-autoresume-watch.ps1 -WorkDir D:\proj
+```
+
+The watcher tails the session transcript in `~/.claude/projects/`. When Claude Code records a usage-limit error, it reads the reset time, waits, and then opens a **new terminal window** running `claude --resume <session> "<continue prompt>"`. You keep watching and steering in the TUI. Close the old window, which is stuck on the limit message. If you continue the old window yourself before the reset, the relaunch is cancelled.
+
+Useful options: `-NoLaunch` (only notify), `-SessionId` (pin one session), `-PermissionMode`, `-AllowedTools`, `-Model` (passed to the relaunched `claude`), `-Shell pwsh.exe`, `-LookbackMinutes` (also handle a limit you hit shortly before starting the watcher), `-MaxRelaunches`. Create `<WorkDir>\.claude-autoresume.stop` to stop it. The log is `.claude-autoresume-watch.log`.
+
+Differences from the headless script: no quota-driven compaction or handoff (the TUI's own auto-compact still applies), no unattended runs, and it relies on the transcript format, which is not a stable interface. Check the log line `Usage limit detected in session ...` the first time a limit happens.
+
 ## Observing and steering a running task
 
 The script runs one prompt, but you are not locked out while it runs.
