@@ -70,7 +70,7 @@ Each loop iteration:
    - Estimated cost in this window is at least `-CompactAtLimitFraction` of the cost level where earlier windows hit the limit (learned automatically)
    - The context is at least `-HardCompactTokens`
    - Optional: the window is older than `-CompactAtMinutes` (off by default)
-3. **Verify the compact.** The context must shrink by at least `-CompactMinReduction` (30%). If `/compact` does not work in `-p` mode or does not shrink anything, the script falls back to a **handoff**: Claude writes `HANDOFF.md`, then a fresh session reads it.
+3. **Verify the compact.** A compact only counts if Claude Code emits a `compact_boundary` event. Otherwise (or if `/compact` errors) the script falls back to a **handoff**: Claude writes `HANDOFF.md`, then a fresh session reads it. In `auto` mode a failed `/compact` is remembered in the state file, so later windows go straight to handoff. The `Compact response events:` log line lists the event types received, which helps diagnose a failure.
 4. **Run one unit of work** (`-MaxTurns` turns).
 5. **On limit hit:** read the reset time, wait until then (+ `-ResetBufferMinutes`), then resume. If the time cannot be read, retry every `-PollMinutes`.
 
@@ -92,7 +92,7 @@ Each loop iteration:
 | `-MinCompactTokens` | 40000 | Below this, never compact |
 | `-HardCompactTokens` | 140000 | Above this, compact regardless of quota |
 | `-MaxCompactsPerWindow` | 3 | Cap on repeated hard compacts per window |
-| `-CompactMinReduction` | 0.30 | Required context shrink for a compact to count |
+| `-CompactMode` | `auto` | `auto`: try `/compact`, remember if it fails and use handoff from then on; `compact`: always try `/compact` first; `handoff`: never try `/compact` |
 | `-CompactAtMinutes` | 0 | Time trigger since window start (0 = off) |
 | `-ResetBufferMinutes` | 2 | Extra wait after the reset time |
 | `-MinWaitSeconds` | 60 | Minimum wait after any limit hit |
@@ -128,7 +128,8 @@ Then check the log:
 
 - `rate_limit_event sample:` is present: quota signals work. Look at whether `utilization` exists and whether it is `0..1` or `0..100`, and set `-UtilizationFormat` accordingly.
 - `Warning: Claude Code returned no rate_limit_event`: only cost and context signals will drive compaction.
-- To exercise the compact path, lower the thresholds, for example `-MinCompactTokens 1000 -HardCompactTokens 2000`, and confirm you see `Compact done (... tokens)` or the handoff fallback.
+- To exercise the compact path, lower the thresholds, for example `-MinCompactTokens 3000 -CompactAtPercent 5`, with a task that runs several turns. You should see either `Compact done (compact_boundary received ...)` or `Falling back to handoff`.
+- `Warning: N tool call(s) denied by permissions`: pass `-AllowedTools` (for example `"Bash Edit Write Read Glob Grep"`), otherwise tools such as `Bash` are denied in headless mode.
 
 ## Notifications (optional)
 
@@ -154,6 +155,7 @@ The script runs Claude unattended with `acceptEdits` and whatever you pass in `-
 - Whether `utilization` is reported, and whether `/compact` works in `-p` mode, depends on your Claude Code version. The script detects and degrades gracefully, but check the log.
 - Cost tracking only sees this script's own usage. Other usage on the same Pro account (claude.ai, other terminals) is invisible to it.
 - The weekly limit is not handled specially: the script waits for it if the reset time is readable, otherwise gives up after `-MaxLimitWaits` polls.
+- The log file can be briefly locked by an editor, antivirus or sync client; the script retries and never crashes because of it, but a few lines may be missing from the file.
 - Windows only (PowerShell, `taskkill`, `SetThreadExecutionState`).
 - A summary or handoff can lose detail. Tasks that depend on exact earlier context are riskier.
 - If `claude` is a `.cmd` shim, `&` or `^` inside `-AllowedTools` may be interpreted by `cmd`. The prompt itself goes through stdin and is unaffected.

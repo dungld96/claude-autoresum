@@ -77,7 +77,6 @@ param(
     [int]$MinCompactTokens = 40000,      # below this, never compact
     [int]$HardCompactTokens = 140000,    # above this, compact regardless of quota
     [int]$MaxCompactsPerWindow = 3,      # cap on repeated hard compacts within one window
-    [double]$CompactMinReduction = 0.30, # compact only counts if the context shrank by >= 30%
     [int]$CompactAtMinutes = 0,          # 0 = time trigger off
     [int]$ResetBufferMinutes = 2,
     [int]$MinWaitSeconds = 60,           # never wait less than this after a limit hit
@@ -87,6 +86,8 @@ param(
     [string]$PermissionMode = "acceptEdits",
     [string]$AllowedTools,               # e.g. "Bash Edit Write Read Glob Grep"
     [string]$Model,
+    [ValidateSet('auto', 'compact', 'handoff')]
+    [string]$CompactMode = 'auto',       # auto: try /compact, remember if it fails; handoff: never try /compact
     [switch]$NoCompact,
     [switch]$NoKeepAwake
 )
@@ -116,7 +117,10 @@ $script:WeekPct = -1.0
 function Write-Log([string]$msg) {
     $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
     Write-Host $line
-    Add-Content -Path $LogFile -Value $line -Encoding UTF8
+    # The log may be briefly locked by an editor / antivirus / sync client: retry, never crash the loop
+    for ($i = 0; $i -lt 5; $i++) {
+        try { Add-Content -Path $LogFile -Value $line -Encoding UTF8 -ErrorAction Stop; return } catch { Start-Sleep -Milliseconds 200 }
+    }
 }
 
 function Send-Notify([string]$msg) {
@@ -141,7 +145,7 @@ function ConvertTo-EpochSeconds($v) {
 
 function New-State {
     @{ sessionId = $null; blockStart = $null; compacted = $false; compactCount = 0; blockCost = 0.0; limitCost = 0.0
-       quotaPct = -1.0; warn = $false; windowResetAt = 0; pendingPrompt = $null }
+       quotaPct = -1.0; warn = $false; windowResetAt = 0; pendingPrompt = $null; compactBroken = $false }
 }
 
 function Load-State {
@@ -154,6 +158,7 @@ function Load-State {
             $s.compacted     = [bool]$j.compacted
             $s.warn          = [bool]$j.warn
             $s.pendingPrompt = $j.pendingPrompt
+            $s.compactBroken = [bool]$j.compactBroken
             if ($j.compactCount)  { $s.compactCount = [int]$j.compactCount }
             if ($j.blockCost)     { $s.blockCost = [double]$j.blockCost }
             if ($j.limitCost)     { $s.limitCost = [double]$j.limitCost }
@@ -387,12 +392,18 @@ function Invoke-Claude([string]$text, [string]$sid) {
     if (-not $newSid -and $init -and $init.session_id) { $newSid = [string]$init.session_id }
     if ($denials -gt 0) { Write-Log "Warning: $denials tool call(s) denied by permissions. Consider widening -AllowedTools." }
 
+    $boundary = $events | Where-Object { $_.type -eq 'system' -and $_.subtype -eq 'compact_boundary' } | Select-Object -First 1
+    $preTokens = 0
+    if ($boundary -and $boundary.compact_metadata -and $boundary.compact_metadata.pre_tokens) { $preTokens = [long]$boundary.compact_metadata.pre_tokens }
+    $kinds = (@($events | ForEach-Object { if ($_.subtype) { "$($_.type)/$($_.subtype)" } else { [string]$_.type } }) | Group-Object | ForEach-Object { "$($_.Name) x$($_.Count)" }) -join ', '
+
     $limit = $false
     if ($isErr -and -not $timedOut -and ($rejectedAt -or ($resultText -match '(?i)(usage limit|limit reached|hit your limit|rate limit|too many requests|resets?\s)'))) { $limit = $true }
 
     [pscustomobject]@{
         Raw = $raw; Text = $resultText; IsError = $isErr; Limit = $limit; SessionId = $newSid; Cost = $cost; Code = $code
         QPct = $qPct; QWeek = $qWeek; QWarn = $qWarn; QReset = $qReset; SawQuota = $sawQuota; RejectedAt = $rejectedAt; TimedOut = $timedOut
+        CompactBoundary = [bool]$boundary; CompactPreTokens = $preTokens; EventKinds = $kinds
     }
 }
 
@@ -572,31 +583,39 @@ try {
 
             if ($reasons.Count -gt 0) {
                 Write-Log ("Compact: {0}" -f ($reasons -join '; '))
-                $c = Invoke-Claude ("/compact " + $CompactInstructions) $state.sessionId
-                Update-Quota $state $c
-                $state.blockCost += $c.Cost
-                if ($c.Limit) {
-                    if (-not (Handle-Limit $c $state)) { $gaveUp = $true; break }
-                    $run--; continue
-                }
-
-                $compactOk = -not $c.IsError -and -not ($c.Text -match '(?i)unknown (slash )?command|isn.t available|not available in')
                 $workSid = $state.sessionId
-                if ($c.SessionId) { $workSid = $c.SessionId }
-                if ($compactOk) {
-                    # Verify: the context must really have shrunk (else /compact was treated as a plain prompt)
-                    $after = Get-ContextTokens $workSid
-                    if ($after -gt 0 -and $after -gt ($ctx * (1 - $CompactMinReduction))) {
-                        Write-Log ("Compact did not shrink the context ({0:N0} -> {1:N0} tokens), treating it as failed." -f $ctx, $after)
-                        $compactOk = $false
-                    } else {
-                        $state.sessionId = $workSid
-                        Write-Log ("Compact done ({0:N0} -> {1:N0} tokens)." -f $ctx, $after)
+                $compactOk = $false
+                $handoffOnly = ($CompactMode -eq 'handoff') -or ($CompactMode -eq 'auto' -and $state.compactBroken)
+                if ($handoffOnly) {
+                    Write-Log "Skipping /compact (mode: $CompactMode$(if ($state.compactBroken) { ', /compact failed earlier' })), using handoff."
+                } else {
+                    $c = Invoke-Claude ("/compact " + $CompactInstructions) $state.sessionId
+                    Update-Quota $state $c
+                    $state.blockCost += $c.Cost
+                    if ($c.Limit) {
+                        if (-not (Handle-Limit $c $state)) { $gaveUp = $true; break }
+                        $run--; continue
                     }
+                    Write-Log ("Compact response events: {0}" -f $c.EventKinds)
+
+                    $compactOk = -not $c.IsError -and -not ($c.Text -match '(?i)unknown (slash )?command|isn.t available|not available in')
+                    if ($c.SessionId) { $workSid = $c.SessionId }
+                    if ($compactOk) {
+                        # Verify. The transcript has no new assistant message right after a compact, so token counts
+                        # cannot be measured yet. Rely on the compact_boundary event Claude Code emits instead.
+                        if ($c.CompactBoundary) {
+                            $state.sessionId = $workSid
+                            Write-Log ("Compact done (compact_boundary received, pre-compact tokens: {0})." -f $c.CompactPreTokens)
+                        } else {
+                            Write-Log "No compact_boundary event received, treating /compact as failed."
+                            $compactOk = $false
+                        }
+                    }
+                    if (-not $compactOk -and $CompactMode -eq 'auto') { $state.compactBroken = $true }
                 }
 
                 if (-not $compactOk) {
-                    Write-Log "Compact does not work in -p mode -> falling back to handoff (HANDOFF.md + new session)."
+                    Write-Log "Falling back to handoff (HANDOFF.md + new session)."
                     $h = Invoke-Claude $HandoffPrompt $workSid
                     Update-Quota $state $h
                     $state.blockCost += $h.Cost
