@@ -625,6 +625,7 @@ try {
         $r = Invoke-Claude $nextPrompt $state.sessionId
         Update-Quota $state $r
         $state.blockCost += $r.Cost
+        Write-Log ("After run: 5h quota {0} | 7d quota {1} | run cost `${2:N2}" -f $(if ($state.quotaPct -ge 0) { "{0:N0}%" -f $state.quotaPct } else { "unknown" }), $(if ($script:WeekPct -ge 0) { "{0:N0}%" -f $script:WeekPct } else { "unknown" }), $r.Cost)
 
         if ($r.SessionId) {
             $state.sessionId = $r.SessionId
