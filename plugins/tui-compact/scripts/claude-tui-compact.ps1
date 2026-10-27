@@ -43,7 +43,7 @@ param(
     [ValidateSet('inject', 'notify')]
     [string]$Mode = 'inject',
     [double]$CompactAtPercent = 80,
-    [int]$MinCompactTokens = 40000,
+    [int]$MinCompactTokens = 200000,
     [string]$CompactInstructions = "Keep: the main goal, decisions already made, the list of modified files, current errors, and the remaining steps in order.",
     [string]$ContinuePrompt = "Continue the unfinished work from where you stopped, following the original goal.",
     [int]$InjectDelaySeconds = 3,

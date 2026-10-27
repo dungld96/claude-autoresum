@@ -1,7 +1,7 @@
 {
   "name": "tui-compact",
   "displayName": "TUI Compact",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Auto /compact in the interactive TUI before the 5-hour quota runs out (Windows, Pro/Max). Pair it with autoContinueAtUsageLimit.",
   "author": {
     "name": "dungld96"
@@ -36,7 +36,7 @@
       "type": "number",
       "title": "Minimum context tokens",
       "description": "Below this context size nothing is compacted, because resuming a small context is cheap.",
-      "default": 40000,
+      "default": 200000,
       "min": 1000
     },
     "compact_instructions": {
