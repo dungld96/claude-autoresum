@@ -1,7 +1,7 @@
 {
   "name": "tui-compact",
   "displayName": "TUI Compact",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Auto /compact in the interactive TUI before the 5-hour quota runs out (Windows, Pro/Max). Pair it with autoContinueAtUsageLimit.",
   "author": {
     "name": "dungld96"

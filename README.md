@@ -33,6 +33,8 @@ When the 5h quota reaches **80%** and the context is at least **40,000 tokens**,
 
 Hooks cannot run slash commands, so a hidden helper types `/compact ...` into the TUI for you.
 
+The status line adds `| compact due` when the thresholds are met, and `| compacted this window` once the compact for this 5h window has been triggered.
+
 ## Settings
 
 Open `/plugin`, pick `tui-compact`, and change the options. The defaults work without touching anything.

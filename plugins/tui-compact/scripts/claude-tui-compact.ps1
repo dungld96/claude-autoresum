@@ -283,7 +283,15 @@ switch ($Action) {
         $s = if ($null -ne $snap.sevenPct) { "{0:N0}%" -f $snap.sevenPct } else { "n/a" }
         $c = if ($null -ne $snap.ctxPct) { "{0:N0}%" -f $snap.ctxPct } else { "n/a" }
         $warn = ''
-        if ($null -ne $snap.fivePct -and $snap.fivePct -ge $CompactAtPercent -and $snap.ctxTokens -ge $MinCompactTokens) { $warn = ' | compact due' }
+        if ($null -ne $snap.fivePct -and $snap.fivePct -ge $CompactAtPercent -and $snap.ctxTokens -ge $MinCompactTokens) {
+            # The hook compacts once per 5h window: show whether it already did
+            $triggered = $false
+            $sp = Get-StatePath $snap.sessionId
+            if (Test-Path $sp) {
+                try { $st = Get-Content -Raw -Encoding UTF8 $sp | ConvertFrom-Json; if ([long]$st.triggeredWindow -eq [long]$snap.resetsAt) { $triggered = $true } } catch {}
+            }
+            $warn = if ($triggered) { ' | compacted this window' } else { ' | compact due' }
+        }
         $mine = "ctx {0} | 5h {1} | 7d {2}{3}" -f $c, $f, $s, $warn
         if ($cfg.chainCommand) {
             $chained = Invoke-Chain ([string]$cfg.chainCommand) $rawIn
