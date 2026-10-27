@@ -63,6 +63,26 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $utf8 = [System.Text.UTF8Encoding]::new($false)
+
+# Plugin options arrive as CLAUDE_PLUGIN_OPTION_<KEY> environment variables (only when the user set them).
+# An explicit command-line parameter wins; otherwise the env var; otherwise the default above.
+$ScriptBound = $PSBoundParameters   # the function below has its own $PSBoundParameters
+function Use-PluginOption([string]$param, [string]$key, [string]$kind) {
+    if ($ScriptBound.ContainsKey($param)) { return }
+    $v = [Environment]::GetEnvironmentVariable("CLAUDE_PLUGIN_OPTION_$key")
+    if ([string]::IsNullOrWhiteSpace($v)) { return }
+    try {
+        if ($kind -eq 'double') { Set-Variable -Name $param -Value ([double]::Parse($v, [System.Globalization.CultureInfo]::InvariantCulture)) -Scope Script }
+        elseif ($kind -eq 'int') { Set-Variable -Name $param -Value ([int][double]::Parse($v, [System.Globalization.CultureInfo]::InvariantCulture)) -Scope Script }
+        else { Set-Variable -Name $param -Value $v -Scope Script }
+    } catch {}
+}
+Use-PluginOption 'Mode' 'MODE' 'string'
+Use-PluginOption 'CompactAtPercent' 'COMPACT_AT_PERCENT' 'double'
+Use-PluginOption 'MinCompactTokens' 'MIN_COMPACT_TOKENS' 'int'
+Use-PluginOption 'CompactInstructions' 'COMPACT_INSTRUCTIONS' 'string'
+Use-PluginOption 'ContinuePrompt' 'CONTINUE_PROMPT' 'string'
+if ($Mode -notin @('inject', 'notify')) { $Mode = 'inject' }
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $LogFile = Join-Path $DataDir 'autoresume.log'
 

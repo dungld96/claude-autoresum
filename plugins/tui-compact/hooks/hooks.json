@@ -13,17 +13,7 @@
               "-File",
               "${CLAUDE_PLUGIN_ROOT}/scripts/claude-tui-compact.ps1",
               "-Action",
-              "Hook",
-              "-Mode",
-              "${user_config.mode}",
-              "-CompactAtPercent",
-              "${user_config.compact_at_percent}",
-              "-MinCompactTokens",
-              "${user_config.min_compact_tokens}",
-              "-CompactInstructions",
-              "${user_config.compact_instructions}",
-              "-ContinuePrompt",
-              "${user_config.continue_prompt}"
+              "Hook"
             ],
             "timeout": 30
           }
@@ -43,17 +33,7 @@
               "-File",
               "${CLAUDE_PLUGIN_ROOT}/scripts/claude-tui-compact.ps1",
               "-Action",
-              "Hook",
-              "-Mode",
-              "${user_config.mode}",
-              "-CompactAtPercent",
-              "${user_config.compact_at_percent}",
-              "-MinCompactTokens",
-              "${user_config.min_compact_tokens}",
-              "-CompactInstructions",
-              "${user_config.compact_instructions}",
-              "-ContinuePrompt",
-              "${user_config.continue_prompt}"
+              "Hook"
             ],
             "timeout": 30
           }
