@@ -89,6 +89,7 @@ param(
     [ValidateSet('auto', 'compact', 'handoff')]
     [string]$CompactMode = 'auto',       # auto: try /compact, remember if it fails; handoff: never try /compact
     [switch]$NoCompact,
+    [switch]$Detail,                     # log full assistant text and longer tool targets
     [switch]$NoKeepAwake
 )
 
@@ -102,6 +103,9 @@ if (-not (Test-Path $WorkDir)) { throw "WorkDir does not exist: $WorkDir" }
 $StateFile = Join-Path $WorkDir ".claude-autoresume.json"
 $LogFile   = Join-Path $WorkDir ".claude-autoresume.log"
 $LockFile  = Join-Path $WorkDir ".claude-autoresume.lock"
+$InboxFile  = Join-Path $WorkDir ".claude-autoresume.inbox.txt"    # write a message here to steer a running task
+$StopFile   = Join-Path $WorkDir ".claude-autoresume.stop"         # create this file to stop gracefully
+$StreamFile = Join-Path $WorkDir ".claude-autoresume.stream.jsonl" # raw stream-json of every run
 
 if ($PromptFile) { $Prompt = Get-Content -Raw -Encoding UTF8 $PromptFile }
 
@@ -145,7 +149,7 @@ function ConvertTo-EpochSeconds($v) {
 
 function New-State {
     @{ sessionId = $null; blockStart = $null; compacted = $false; compactCount = 0; blockCost = 0.0; limitCost = 0.0
-       quotaPct = -1.0; warn = $false; windowResetAt = 0; pendingPrompt = $null; compactBroken = $false }
+       quotaPct = -1.0; warn = $false; windowResetAt = 0; pendingPrompt = $null; compactBroken = $false; inboxMessage = $null }
 }
 
 function Load-State {
@@ -159,6 +163,7 @@ function Load-State {
             $s.warn          = [bool]$j.warn
             $s.pendingPrompt = $j.pendingPrompt
             $s.compactBroken = [bool]$j.compactBroken
+            $s.inboxMessage  = $j.inboxMessage
             if ($j.compactCount)  { $s.compactCount = [int]$j.compactCount }
             if ($j.blockCost)     { $s.blockCost = [double]$j.blockCost }
             if ($j.limitCost)     { $s.limitCost = [double]$j.limitCost }
@@ -250,10 +255,22 @@ function Stop-ProcessTree([System.Diagnostics.Process]$p) {
 function Write-Progress-Event($ev) {
     if ($ev.type -ne 'assistant') { return }
     foreach ($c in @($ev.message.content)) {
-        if ($c.type -eq 'tool_use') { Write-Log ("  tool: {0}" -f $c.name) }
+        if ($c.type -eq 'tool_use') {
+            $target = ''
+            if ($c.input) {
+                foreach ($k in 'command', 'file_path', 'path', 'pattern', 'url', 'description', 'prompt') {
+                    if ($c.input.$k) { $target = [string]$c.input.$k; break }
+                }
+            }
+            $target = ($target -replace '\s+', ' ').Trim()
+            $maxT = if ($Detail) { 400 } else { 100 }
+            if ($target.Length -gt $maxT) { $target = $target.Substring(0, $maxT) + '...' }
+            Write-Log ("  tool: {0} {1}" -f $c.name, $target)
+        }
         elseif ($c.type -eq 'text' -and $c.text) {
             $t = ([string]$c.text -replace '\s+', ' ').Trim()
-            if ($t) { Write-Log ("  text: {0}" -f $t.Substring(0, [Math]::Min(120, $t.Length))) }
+            $maxX = if ($Detail) { 2000 } else { 120 }
+            if ($t) { Write-Log ("  text: {0}" -f $t.Substring(0, [Math]::Min($maxX, $t.Length))) }
         }
     }
 }
@@ -303,6 +320,7 @@ function Invoke-Claude([string]$text, [string]$sid) {
                 $line = $readTask.Result
                 if ($null -eq $line) { break }
                 $rawLines.Add($line)
+                try { [System.IO.File]::AppendAllText($StreamFile, $line + "`n", $utf8) } catch {}
                 $l = $line.Trim()
                 if ($l.StartsWith('{')) {
                     try { $ev = $l | ConvertFrom-Json; $events.Add($ev); Write-Progress-Event $ev } catch {}
@@ -459,6 +477,7 @@ function Wait-Until([datetime]$t) {
     Write-Log ("Waiting until {0}" -f $t.ToString('yyyy-MM-dd HH:mm'))
     $lastLog = Get-Date
     while ((Get-Date) -lt $t) {
+        if (Test-Path $StopFile) { Write-Log "Stop file found, ending the wait."; return }
         Start-Sleep -Seconds 30
         if (((Get-Date) - $lastLog).TotalMinutes -ge 30) {
             Write-Log ("About {0} minutes left" -f [int]($t - (Get-Date)).TotalMinutes)
@@ -524,6 +543,7 @@ try {
         Remove-Item -Path $StateFile -ErrorAction SilentlyContinue
     }
 
+    Remove-Item -Path $StopFile -ErrorAction SilentlyContinue   # ignore a stale stop request
     $state = Load-State
     if ($SessionId) { $state.sessionId = $SessionId }
 
@@ -549,6 +569,14 @@ try {
     $gaveUp = $false
     while ($run -lt $MaxRuns) {
         $run++
+
+        if (Test-Path $StopFile) {
+            Remove-Item -Path $StopFile -ErrorAction SilentlyContinue
+            Write-Log "Stop file found, stopping. Run the script again to continue from the saved state."
+            Save-State $state
+            $gaveUp = $true
+            break
+        }
 
         # The 5h window reset on its own (no limit hit needed)
         if ($state.windowResetAt -gt 0 -and (Get-Now-Unix) -gt $state.windowResetAt) {
@@ -638,10 +666,25 @@ try {
             }
         }
 
+        # Messages written to the inbox file are delivered with the next run
+        if (Test-Path $InboxFile) {
+            $msg = [string](Get-Content -Raw -Encoding UTF8 $InboxFile -ErrorAction SilentlyContinue)
+            if ($msg.Trim()) {
+                $state.inboxMessage = (([string]$state.inboxMessage + "`n`n" + $msg.Trim()).Trim())
+                Remove-Item -Path $InboxFile -ErrorAction SilentlyContinue
+                Write-Log ("Inbox message picked up ({0} chars), delivering with this run." -f $msg.Trim().Length)
+                Save-State $state
+            }
+        }
+        $promptToSend = $nextPrompt
+        if ($state.inboxMessage) {
+            $promptToSend = "Message from the user (handle it first, then continue the task):`n" + $state.inboxMessage + "`n`n" + $nextPrompt
+        }
+
         # 2) Run one unit of work
         $runStart = Get-Now-Unix
         Write-Log "Run #$run"
-        $r = Invoke-Claude $nextPrompt $state.sessionId
+        $r = Invoke-Claude $promptToSend $state.sessionId
         Update-Quota $state $r
         $state.blockCost += $r.Cost
         Write-Log ("After run: 5h quota {0} | 7d quota {1} | run cost `${2:N2}" -f $(if ($state.quotaPct -ge 0) { "{0:N0}%" -f $state.quotaPct } else { "unknown" }), $(if ($script:WeekPct -ge 0) { "{0:N0}%" -f $script:WeekPct } else { "unknown" }), $r.Cost)
@@ -671,6 +714,7 @@ try {
         }
         $errStreak = 0
         $script:LimitStreak = 0
+        $state.inboxMessage = $null   # delivered by a successful run
 
         if (-not $state.blockStart) { $state.blockStart = $runStart; $state.compacted = $false; $state.compactCount = 0 }
         if (-not $script:SawQuotaInfo -and $run -eq 1) {

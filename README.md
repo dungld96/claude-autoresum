@@ -103,6 +103,7 @@ Each loop iteration:
 | `-AllowedTools` | | Passed to `--allowedTools`, e.g. `"Bash Edit Write Read Glob Grep"` |
 | `-Model` | | Passed to `--model` |
 | `-NoCompact` | off | Never compact |
+| `-Detail` | off | Log full assistant text and longer tool targets |
 | `-NoKeepAwake` | off | Do not prevent Windows from sleeping |
 
 ## Files created in `-WorkDir`
@@ -112,6 +113,9 @@ Each loop iteration:
 | `.claude-autoresume.json` | State (session id, window counters, pending handoff). Renamed to `.claude-autoresume.done.json` when the task finishes |
 | `.claude-autoresume.log` | Log of everything the script does |
 | `.claude-autoresume.lock` | Prevents two instances in the same folder |
+| `.claude-autoresume.stream.jsonl` | Raw stream-json of every run |
+| `.claude-autoresume.inbox.txt` | Optional: your message to the running task (deleted once picked up) |
+| `.claude-autoresume.stop` | Optional: create it to stop gracefully (deleted when honored) |
 | `HANDOFF.md` | Only if the handoff fallback is used |
 
 Consider adding these to `.gitignore`.
@@ -130,6 +134,43 @@ Then check the log:
 - `Warning: Claude Code returned no rate_limit_event`: only cost and context signals will drive compaction.
 - To exercise the compact path, lower the thresholds, for example `-MinCompactTokens 3000 -CompactAtPercent 5`, with a task that runs several turns. You should see either `Compact done (compact_boundary received ...)` or `Falling back to handoff`.
 - `Warning: N tool call(s) denied by permissions`: pass `-AllowedTools` (for example `"Bash Edit Write Read Glob Grep"`), otherwise tools such as `Bash` are denied in headless mode.
+
+## Observing and steering a running task
+
+The script runs one prompt, but you are not locked out while it runs.
+
+**Watch it live.** Every tool call (with its target: command, file path, pattern) and a snippet of each assistant message is logged as it happens. Use `-Detail` for full assistant text and longer targets. From a second PowerShell window:
+
+```powershell
+Get-Content D:\proj\.claude-autoresume.log -Wait -Tail 50
+```
+
+The complete raw `stream-json` of every run is appended to `.claude-autoresume.stream.jsonl` (it grows over time; delete it when you no longer need it).
+
+**Send a message to a running task.** Write text into the inbox file. It is picked up before the next run (runs are short, `-MaxTurns` turns each) and delivered to Claude as a message from you:
+
+```powershell
+Set-Content D:\proj\.claude-autoresume.inbox.txt "Skip the tests folder, and use TypeScript for new files."
+```
+
+If the message could not be delivered (limit hit, error) it stays pending and is retried with the next run.
+
+**Stop gracefully.** Create the stop file. The script stops before the next run (or ends a limit wait) and keeps its state, so running the same command again continues:
+
+```powershell
+New-Item D:\proj\.claude-autoresume.stop -ItemType File
+```
+
+`Ctrl+C` also works, but may kill the current run half-way.
+
+**Take over interactively.** Stop the script, open the session yourself, then hand it back:
+
+```powershell
+# the session id is in .claude-autoresume.json, or in the log
+claude --resume <session-id>          # work with Claude interactively, then exit
+# note the new session id (claude --resume creates a new one), then:
+.\claude-autoresume.ps1 -WorkDir D:\proj -SessionId <new-session-id>
+```
 
 ## Notifications (optional)
 
