@@ -18,23 +18,17 @@
                  "/compact <instructions>" + Enter into the TUI's console, waits for the
                  PostCompact signal, then (if the trigger interrupted a running task) types the
                  continue prompt.
-    Snippet      Prints the settings.json block to paste (manual setup, default action).
     Install      Plugin setup: copies this script to a stable folder and writes the statusLine into
                  settings.json (user, project or local scope). An existing status line is kept and
                  chained, so its output still shows. Also enables autoContinueAtUsageLimit (user scope).
     Uninstall    Removes the statusLine entry again (restores a chained one).
 
-  Two ways to use it:
-    A. As the `tui-compact` plugin (hooks come from the plugin; run the /tui-compact:setup skill once).
-    B. Standalone: run `-Action Snippet` and merge the printed block into settings.json by hand.
+  It is the engine of the `tui-compact` plugin: the hooks come from the plugin, and the
+  /tui-compact:setup skill runs -Action Install once.
 
   Hooks cannot run slash commands, so -Mode inject types the command into the TUI's console
   (Win32 AttachConsole + WriteConsoleInput). This is experimental: see Limitations in the README.
   -Mode notify only shows a warning asking you to run /compact yourself.
-
-.EXAMPLE
-  .\claude-tui-compact.ps1                       # print the settings.json snippet
-  .\claude-tui-compact.ps1 -Mode notify          # snippet for notify-only mode
 
 .NOTES
   Requires Windows PowerShell 5.1+ and a Claude Code version whose status line JSON contains
@@ -42,8 +36,8 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Snippet', 'StatusLine', 'Hook', 'PostCompact', 'Inject', 'Install', 'Uninstall')]
-    [string]$Action = 'Snippet',
+    [ValidateSet('Help', 'StatusLine', 'Hook', 'PostCompact', 'Inject', 'Install', 'Uninstall')]
+    [string]$Action = 'Help',
     [ValidateSet('user', 'project', 'local')]
     [string]$Scope = 'user',            # Install/Uninstall: which settings file
     [ValidateSet('inject', 'notify')]
@@ -256,21 +250,9 @@ function Find-ClaudePid {
 
 switch ($Action) {
 
-    'Snippet' {
-        $self = $PSCommandPath
-        $common = "-NoProfile -ExecutionPolicy Bypass -File `"$self`" -Mode $Mode -CompactAtPercent $CompactAtPercent -MinCompactTokens $MinCompactTokens"
-        $settings = [ordered]@{
-            statusLine = [ordered]@{ type = 'command'; command = "powershell.exe $common -Action StatusLine" }
-            hooks = [ordered]@{
-                PostToolBatch = @(@{ hooks = @(@{ type = 'command'; command = "powershell.exe $common -Action Hook"; timeout = 30 }) })
-                Stop          = @(@{ hooks = @(@{ type = 'command'; command = "powershell.exe $common -Action Hook"; timeout = 30 }) })
-                PostCompact   = @(@{ hooks = @(@{ type = 'command'; command = "powershell.exe $common -Action PostCompact"; timeout = 30 }) })
-            }
-        }
-        Write-Output "Merge this into %USERPROFILE%\.claude\settings.json (user settings), then restart Claude Code."
-        Write-Output "Also set:  autoContinueAtUsageLimit: true   (continues the task after the limit resets)"
-        Write-Output ""
-        Write-Output ($settings | ConvertTo-Json -Depth 8)
+    'Help' {
+        Write-Output "claude-tui-compact is the engine of the tui-compact Claude Code plugin."
+        Write-Output "Install the plugin and run /tui-compact:setup inside Claude Code. See README.md."
     }
 
     'StatusLine' {

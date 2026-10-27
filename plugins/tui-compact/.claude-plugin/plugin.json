@@ -1,17 +1,27 @@
 {
   "name": "tui-compact",
   "displayName": "TUI Compact",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Auto /compact in the interactive TUI before the 5-hour quota runs out (Windows, Pro/Max). Pair it with autoContinueAtUsageLimit.",
-  "author": { "name": "dungld96" },
+  "author": {
+    "name": "dungld96"
+  },
   "repository": "https://github.com/dungld96/claude-autoresum",
-  "keywords": ["compact", "quota", "usage-limit", "windows"],
+  "keywords": [
+    "compact",
+    "quota",
+    "usage-limit",
+    "windows"
+  ],
   "userConfig": {
     "mode": {
       "type": "string",
       "title": "Mode",
       "description": "inject: type /compact into the TUI for you. notify: only show a warning asking you to run /compact.",
-      "options": ["inject", "notify"],
+      "options": [
+        "inject",
+        "notify"
+      ],
       "default": "inject"
     },
     "compact_at_percent": {
