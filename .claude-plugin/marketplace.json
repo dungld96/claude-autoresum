@@ -1,0 +1,14 @@
+{
+  "name": "autoresume-tools",
+  "description": "Tools that keep Claude Code sessions cheap to resume after a usage limit",
+  "owner": {
+    "name": "dungld96"
+  },
+  "plugins": [
+    {
+      "name": "tui-compact",
+      "source": "./plugins/tui-compact",
+      "description": "Auto /compact in the interactive TUI before the 5h quota runs out (Windows)"
+    }
+  ]
+}

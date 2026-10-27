@@ -1,0 +1,84 @@
+{
+  "hooks": {
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/claude-tui-compact.ps1",
+              "-Action",
+              "Hook",
+              "-Mode",
+              "${user_config.mode}",
+              "-CompactAtPercent",
+              "${user_config.compact_at_percent}",
+              "-MinCompactTokens",
+              "${user_config.min_compact_tokens}",
+              "-CompactInstructions",
+              "${user_config.compact_instructions}",
+              "-ContinuePrompt",
+              "${user_config.continue_prompt}"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/claude-tui-compact.ps1",
+              "-Action",
+              "Hook",
+              "-Mode",
+              "${user_config.mode}",
+              "-CompactAtPercent",
+              "${user_config.compact_at_percent}",
+              "-MinCompactTokens",
+              "${user_config.min_compact_tokens}",
+              "-CompactInstructions",
+              "${user_config.compact_instructions}",
+              "-ContinuePrompt",
+              "${user_config.continue_prompt}"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/claude-tui-compact.ps1",
+              "-Action",
+              "PostCompact"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -18,7 +18,15 @@
                  "/compact <instructions>" + Enter into the TUI's console, waits for the
                  PostCompact signal, then (if the trigger interrupted a running task) types the
                  continue prompt.
-    Snippet      Prints the settings.json block to paste (default action).
+    Snippet      Prints the settings.json block to paste (manual setup, default action).
+    Install      Plugin setup: copies this script to a stable folder and writes the statusLine into
+                 settings.json (user, project or local scope). An existing status line is kept and
+                 chained, so its output still shows. Also enables autoContinueAtUsageLimit (user scope).
+    Uninstall    Removes the statusLine entry again (restores a chained one).
+
+  Two ways to use it:
+    A. As the `tui-compact` plugin (hooks come from the plugin; run the /tui-compact:setup skill once).
+    B. Standalone: run `-Action Snippet` and merge the printed block into settings.json by hand.
 
   Hooks cannot run slash commands, so -Mode inject types the command into the TUI's console
   (Win32 AttachConsole + WriteConsoleInput). This is experimental: see Limitations in the README.
@@ -34,8 +42,10 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Snippet', 'StatusLine', 'Hook', 'PostCompact', 'Inject')]
+    [ValidateSet('Snippet', 'StatusLine', 'Hook', 'PostCompact', 'Inject', 'Install', 'Uninstall')]
     [string]$Action = 'Snippet',
+    [ValidateSet('user', 'project', 'local')]
+    [string]$Scope = 'user',            # Install/Uninstall: which settings file
     [ValidateSet('inject', 'notify')]
     [string]$Mode = 'inject',
     [double]$CompactAtPercent = 80,
@@ -71,6 +81,71 @@ function Read-StdinJson {
         if ($raw -and $raw.Trim()) { return ($raw | ConvertFrom-Json) }
     } catch { Write-Log "Could not read stdin JSON: $($_.Exception.Message)" }
     return $null
+}
+
+function Read-StdinRaw {
+    try {
+        [Console]::InputEncoding = $utf8
+        return [Console]::In.ReadToEnd()
+    } catch { return '' }
+}
+
+$ConfigPath = Join-Path $DataDir 'config.json'
+$StableScript = Join-Path $DataDir 'claude-tui-compact.ps1'
+
+function Load-Config {
+    if (Test-Path $ConfigPath) { try { return (Get-Content -Raw -Encoding UTF8 $ConfigPath | ConvertFrom-Json) } catch {} }
+    return ([pscustomobject]@{})
+}
+
+function Set-ConfigValue([string]$name, $value) {
+    $c = Load-Config
+    if ($null -eq $c.$name) { $c | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force }
+    elseif ($c.$name -ne $value) { $c.$name = $value }
+    else { return }
+    try { ($c | ConvertTo-Json) | Set-Content -Path $ConfigPath -Encoding UTF8 } catch {}
+}
+
+# Runs a previously configured status line command (through cmd.exe) and returns its output
+function Invoke-Chain([string]$cmd, [string]$json) {
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = 'cmd.exe'
+        $psi.Arguments = '/d /s /c "' + $cmd + '"'
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.StandardOutputEncoding = $utf8
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $bytes = $utf8.GetBytes($json)
+        $p.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+        $p.StandardInput.Close()
+        $task = $p.StandardOutput.ReadToEndAsync()
+        if (-not $task.Wait(4000)) { try { $p.Kill() } catch {}; return '' }
+        return $task.Result.TrimEnd()
+    } catch { return '' }
+}
+
+function Get-SettingsPath([string]$scope) {
+    switch ($scope) {
+        'user'    { return (Join-Path $env:USERPROFILE '.claude\settings.json') }
+        'project' { return (Join-Path (Get-Location).Path '.claude\settings.json') }
+        'local'   { return (Join-Path (Get-Location).Path '.claude\settings.local.json') }
+    }
+}
+
+function Read-Settings([string]$path) {
+    if (Test-Path $path) { return (Get-Content -Raw -Encoding UTF8 $path | ConvertFrom-Json) }
+    return ([pscustomobject]@{})
+}
+
+function Write-Settings([string]$path, $obj) {
+    $dir = Split-Path $path -Parent
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    if (Test-Path $path) { Copy-Item $path ($path + '.bak') -Force }
+    ($obj | ConvertTo-Json -Depth 20) | Set-Content -Path $path -Encoding UTF8
 }
 
 function Get-SnapshotPath([string]$sid) { Join-Path $DataDir ("{0}.json" -f $sid) }
@@ -179,8 +254,13 @@ switch ($Action) {
     }
 
     'StatusLine' {
-        $in = Read-StdinJson
+        $rawIn = Read-StdinRaw
+        $in = $null
+        if ($rawIn -and $rawIn.Trim()) { try { $in = $rawIn | ConvertFrom-Json } catch {} }
         if (-not $in) { Write-Output "autoresume: no data"; break }
+        $cfg = Load-Config
+        if ($cfg.compactAtPercent) { $CompactAtPercent = [double]$cfg.compactAtPercent }
+        if ($cfg.minCompactTokens) { $MinCompactTokens = [int]$cfg.minCompactTokens }
         $five = $in.rate_limits.five_hour
         $seven = $in.rate_limits.seven_day
         $ctxTok = 0
@@ -202,7 +282,12 @@ switch ($Action) {
         $c = if ($null -ne $snap.ctxPct) { "{0:N0}%" -f $snap.ctxPct } else { "n/a" }
         $warn = ''
         if ($null -ne $snap.fivePct -and $snap.fivePct -ge $CompactAtPercent -and $snap.ctxTokens -ge $MinCompactTokens) { $warn = ' | compact due' }
-        Write-Output ("ctx {0} | 5h {1} | 7d {2}{3}" -f $c, $f, $s, $warn)
+        $mine = "ctx {0} | 5h {1} | 7d {2}{3}" -f $c, $f, $s, $warn
+        if ($cfg.chainCommand) {
+            $chained = Invoke-Chain ([string]$cfg.chainCommand) $rawIn
+            if ($chained) { Write-Output $chained }
+        }
+        Write-Output $mine
     }
 
     'Hook' {
@@ -210,6 +295,15 @@ switch ($Action) {
         if (-not $in -or -not $in.session_id) { break }
         $sid = [string]$in.session_id
         $event = [string]$in.hook_event_name
+        # Let the status line use the same thresholds as the hook, and keep its stable copy of this script current
+        Set-ConfigValue 'compactAtPercent' $CompactAtPercent
+        Set-ConfigValue 'minCompactTokens' $MinCompactTokens
+        try {
+            if ((Test-Path $StableScript) -and ($PSCommandPath -ne $StableScript) -and
+                ((Get-FileHash $PSCommandPath).Hash -ne (Get-FileHash $StableScript).Hash)) {
+                Copy-Item $PSCommandPath $StableScript -Force
+            }
+        } catch {}
         $snapPath = Get-SnapshotPath $sid
         if (-not (Test-Path $snapPath)) { break }
         try { $snap = Get-Content -Raw -Encoding UTF8 $snapPath | ConvertFrom-Json } catch { break }
@@ -254,6 +348,50 @@ switch ($Action) {
 
         if ($midTask) {
             Write-Output (@{ continue = $false; stopReason = "autoresume: $reason - compacting before the limit, will continue automatically" } | ConvertTo-Json -Compress)
+        }
+    }
+
+    'Install' {
+        Copy-Item $PSCommandPath $StableScript -Force
+        $path = Get-SettingsPath $Scope
+        $settings = Read-Settings $path
+        $ourCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$StableScript`" -Action StatusLine"
+        $existing = $settings.statusLine
+        if ($existing -and $existing.command -and ([string]$existing.command -notlike '*claude-tui-compact.ps1*')) {
+            Set-ConfigValue 'chainCommand' ([string]$existing.command)
+            Write-Output "Existing status line kept and chained: $($existing.command)"
+        }
+        $sl = [pscustomobject]@{ type = 'command'; command = $ourCmd }
+        $settings | Add-Member -NotePropertyName statusLine -NotePropertyValue $sl -Force
+        if ($Scope -eq 'user') {
+            # autoContinueAtUsageLimit is only read from user (or managed) settings
+            $settings | Add-Member -NotePropertyName autoContinueAtUsageLimit -NotePropertyValue $true -Force
+        }
+        Write-Settings $path $settings
+        Write-Output "Updated $path (backup: $path.bak)"
+        Write-Output "  statusLine -> $ourCmd"
+        if ($Scope -eq 'user') { Write-Output "  autoContinueAtUsageLimit -> true" }
+        else { Write-Output "  Note: autoContinueAtUsageLimit is not read from project settings. Enable it in your user settings (run setup with scope user)." }
+        Write-Output "Restart Claude Code, then look for 'ctx ... | 5h ... | 7d ...' at the bottom after the first reply."
+    }
+
+    'Uninstall' {
+        $path = Get-SettingsPath $Scope
+        if (-not (Test-Path $path)) { Write-Output "No settings file at $path"; break }
+        $settings = Read-Settings $path
+        if ($settings.statusLine -and ([string]$settings.statusLine.command -like '*claude-tui-compact.ps1*')) {
+            $cfg = Load-Config
+            if ($cfg.chainCommand) {
+                $settings.statusLine = [pscustomobject]@{ type = 'command'; command = [string]$cfg.chainCommand }
+                Write-Output "Restored the previous status line."
+            } else {
+                $settings.PSObject.Properties.Remove('statusLine')
+                Write-Output "Removed the status line entry."
+            }
+            Write-Settings $path $settings
+            Write-Output "Updated $path (backup: $path.bak). autoContinueAtUsageLimit was left unchanged."
+        } else {
+            Write-Output "The status line in $path is not ours, nothing changed."
         }
     }
 

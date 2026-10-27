@@ -1,0 +1,45 @@
+{
+  "name": "tui-compact",
+  "displayName": "TUI Compact",
+  "version": "0.2.0",
+  "description": "Auto /compact in the interactive TUI before the 5-hour quota runs out (Windows, Pro/Max). Pair it with autoContinueAtUsageLimit.",
+  "author": { "name": "dungld96" },
+  "repository": "https://github.com/dungld96/claude-autoresum",
+  "keywords": ["compact", "quota", "usage-limit", "windows"],
+  "userConfig": {
+    "mode": {
+      "type": "string",
+      "title": "Mode",
+      "description": "inject: type /compact into the TUI for you. notify: only show a warning asking you to run /compact.",
+      "options": ["inject", "notify"],
+      "default": "inject"
+    },
+    "compact_at_percent": {
+      "type": "number",
+      "title": "Compact at 5h quota %",
+      "description": "Compact once the 5-hour quota reaches this percentage.",
+      "default": 80,
+      "min": 1,
+      "max": 100
+    },
+    "min_compact_tokens": {
+      "type": "number",
+      "title": "Minimum context tokens",
+      "description": "Below this context size nothing is compacted, because resuming a small context is cheap.",
+      "default": 40000,
+      "min": 1000
+    },
+    "compact_instructions": {
+      "type": "string",
+      "title": "Compact instructions",
+      "description": "Text passed to /compact: what to keep.",
+      "default": "Keep: the main goal, decisions already made, the list of modified files, current errors, and the remaining steps in order."
+    },
+    "continue_prompt": {
+      "type": "string",
+      "title": "Continue prompt",
+      "description": "Typed after a compact that interrupted a running task.",
+      "default": "Continue the unfinished work from where you stopped, following the original goal."
+    }
+  }
+}
